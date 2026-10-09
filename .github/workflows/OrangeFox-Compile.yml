@@ -170,9 +170,13 @@ jobs:
         DEVICE_NAME: ${{ inputs.DEVICE_NAME }}
         BUILD_TARGET: ${{ inputs.BUILD_TARGET }}
       run: |
-        set -euo pipefail
+        # NOTE: Do NOT use `set -u` here - AOSP build/envsetup.sh is not
+        # nounset-clean (references $TOP, $ZSH_VERSION unbound) and fails
+        # immediately under `set -u` with "TOP: unbound variable".
+        set -eo pipefail
         cd "${GITHUB_WORKSPACE}/OrangeFox/fox_${MANIFEST_BRANCH}"
-        set +e
+        set +e +u
+        set +o pipefail
         # shellcheck disable=SC1091
         source build/envsetup.sh
         set -e
