@@ -181,7 +181,14 @@ jobs:
         # shellcheck disable=SC1091
         source build/envsetup.sh
         set -e
-        lunch "twrp_${DEVICE_NAME}-eng"
+        # Newer manifests (14.1+) require a release-qualified lunch combo
+        # (14.1 -> ap2a per OrangeFox docs, 16.0 -> bp2a for android-16.0.0 base)
+        case "${MANIFEST_BRANCH}" in
+          14.1) LUNCH_RELEASE="-ap2a" ;;
+          16.0) LUNCH_RELEASE="-bp2a" ;;
+          *) LUNCH_RELEASE="" ;;
+        esac
+        lunch "twrp_${DEVICE_NAME}${LUNCH_RELEASE}-eng"
         mka adbd "${BUILD_TARGET}image"
 
     - name: Set Release Properties
