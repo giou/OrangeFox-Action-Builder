@@ -6,6 +6,8 @@ name: OrangeFox - Build
 # https://github.com/azwhikaru for Recovery Builder Template
 # And all Contributors in every repositories I used
 
+run-name: OrangeFox ${{ inputs.MANIFEST_BRANCH }} for ${{ inputs.DEVICE_NAME }} (${{ inputs.BUILD_TARGET }})
+
 on:
   workflow_dispatch:
     inputs:
@@ -20,11 +22,11 @@ on:
       DEVICE_TREE:
         description: 'OrangeFox Device Tree'
         required: true
-        default: 'https://github.com/murtazakolachi/device_xiaomi_ofox_apollo'
+        default: 'https://github.com/MurtazaKolachi/device_xiaomi_ofox_apollo'
       DEVICE_TREE_BRANCH:
         description: 'OrangeFox Device Tree Branch'
         required: true
-        default: 'fox-12.1'
+        default: 'ofox'
       DEVICE_PATH:
         description: 'Specify your Device Path'
         required: true
@@ -43,18 +45,61 @@ on:
         - recovery
         - vendorboot
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build:
     name: Build OFR by ${{ github.actor }}
     runs-on: ubuntu-22.04
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 720
     permissions:
       contents: write
+    env:
+      ALLOW_MISSING_DEPENDENCIES: 'true'
+      DEBIAN_FRONTEND: noninteractive
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
-              
+      uses: actions/checkout@v5
+
+    - name: Validate inputs
+      env:
+        MANIFEST_BRANCH: ${{ inputs.MANIFEST_BRANCH }}
+        DEVICE_TREE: ${{ inputs.DEVICE_TREE }}
+        DEVICE_TREE_BRANCH: ${{ inputs.DEVICE_TREE_BRANCH }}
+        DEVICE_PATH: ${{ inputs.DEVICE_PATH }}
+        DEVICE_NAME: ${{ inputs.DEVICE_NAME }}
+      run: |
+        set -euo pipefail
+        echo "Manifest: fox_${MANIFEST_BRANCH}"
+        echo "Device tree: ${DEVICE_TREE} @ ${DEVICE_TREE_BRANCH}"
+        echo "Device path: ${DEVICE_PATH}"
+        echo "Device: ${DEVICE_NAME}"
+
+        # Basic sanity: DEVICE_PATH must look like device/<vendor>/<codename>
+        # and must not contain '..' (path traversal).
+        if [[ "${DEVICE_PATH}" == *".."* ]]; then
+          echo "::error::DEVICE_PATH must not contain '..': ${DEVICE_PATH}"
+          exit 1
+        fi
+        if [[ "${DEVICE_PATH}" != device/*/* ]]; then
+          echo "::error::DEVICE_PATH should look like 'device/<vendor>/<codename>', got: ${DEVICE_PATH}"
+          exit 1
+        fi
+
+        # Fail fast if the device-tree repo/branch does not exist.
+        # This is the step that previously failed late with cryptic "exit code 128".
+        if ! git ls-remote --heads "${DEVICE_TREE}" "${DEVICE_TREE_BRANCH}" | grep -q .; then
+          echo "::error::Branch '${DEVICE_TREE_BRANCH}' not found in ${DEVICE_TREE}."
+          echo "Available branches:"
+          git ls-remote --heads "${DEVICE_TREE}" | awk '{print $2}' | sed 's|refs/heads/||' || true
+          echo ""
+          echo "Check DEVICE_TREE / DEVICE_TREE_BRANCH workflow inputs and retry."
+          exit 1
+        fi
+        echo "Input validation passed."
+
     - name: Clean-up
       uses: rokibhasansagar/slimhub_actions@main
 
@@ -62,63 +107,116 @@ jobs:
       uses: pierotofy/set-swap-space@master
       with:
         swap-size-gb: 24
-      
+
     - name: Build Environment
       run: |
-        sudo apt install aria2 -y
-        git clone https://gitlab.com/OrangeFox/misc/scripts.git -b master
+        set -euo pipefail
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq aria2
+        git clone --depth=1 https://gitlab.com/OrangeFox/misc/scripts.git -b master
         cd scripts
         sudo bash setup/android_build_env.sh
-      
+
     - name: Set-up Manifest
-      if: inputs.MANIFEST_BRANCH == '11.0' || inputs.MANIFEST_BRANCH == '12.1'
+      env:
+        MANIFEST_BRANCH: ${{ inputs.MANIFEST_BRANCH }}
+        GH_ACTOR: ${{ github.actor }}
+        GH_ACTOR_ID: ${{ github.actor_id }}
       run: |
-        mkdir -p ${GITHUB_WORKSPACE}/OrangeFox
-        cd ${GITHUB_WORKSPACE}/OrangeFox
-        git config --global user.name "${{ github.actor }}"
-        git config --global user.email "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
-        git clone https://gitlab.com/OrangeFox/sync.git -b master
+        set -euo pipefail
+        mkdir -p "${GITHUB_WORKSPACE}/OrangeFox"
+        cd "${GITHUB_WORKSPACE}/OrangeFox"
+        git config --global user.name "${GH_ACTOR}"
+        git config --global user.email "${GH_ACTOR_ID}+${GH_ACTOR}@users.noreply.github.com"
+        git config --global --add safe.directory '*'
+        rm -rf sync
+        git clone --depth=1 https://gitlab.com/OrangeFox/sync.git -b master
         cd sync
-        ./orangefox_sync.sh --branch ${{ inputs.MANIFEST_BRANCH }} --path ${GITHUB_WORKSPACE}/OrangeFox/fox_${{ inputs.MANIFEST_BRANCH }}
+        ./orangefox_sync.sh --branch "${MANIFEST_BRANCH}" --path "${GITHUB_WORKSPACE}/OrangeFox/fox_${MANIFEST_BRANCH}"
 
     - name: Clone Device Tree
+      env:
+        MANIFEST_BRANCH: ${{ inputs.MANIFEST_BRANCH }}
+        DEVICE_TREE: ${{ inputs.DEVICE_TREE }}
+        DEVICE_TREE_BRANCH: ${{ inputs.DEVICE_TREE_BRANCH }}
+        DEVICE_PATH: ${{ inputs.DEVICE_PATH }}
       run: |
-        cd ${GITHUB_WORKSPACE}/OrangeFox/fox_${{ inputs.MANIFEST_BRANCH }}
-        git clone ${{ inputs.DEVICE_TREE }} -b ${{ inputs.DEVICE_TREE_BRANCH }} ./${{ inputs.DEVICE_PATH }}
-        cd ${{ inputs.DEVICE_PATH }}
-        echo "COMMIT_ID=$(git rev-parse HEAD)" >> $GITHUB_ENV
+        set -euo pipefail
+        FOX_ROOT="${GITHUB_WORKSPACE}/OrangeFox/fox_${MANIFEST_BRANCH}"
+        if [[ ! -d "${FOX_ROOT}" ]]; then
+          echo "::error::Manifest checkout not found at ${FOX_ROOT}. Set-up Manifest probably failed."
+          exit 1
+        fi
+        cd "${FOX_ROOT}"
+
+        # The manifest may already ship this path - a plain `git clone`
+        # into an existing non-empty dir fails with exit 128, so reset it first.
+        if [[ -e "${DEVICE_PATH}" ]]; then
+          echo "Removing pre-existing ${DEVICE_PATH} ..."
+          rm -rf "${DEVICE_PATH}"
+        fi
+        mkdir -p "$(dirname "${DEVICE_PATH}")"
+
+        echo "Cloning ${DEVICE_TREE} (branch: ${DEVICE_TREE_BRANCH}) into ${DEVICE_PATH} ..."
+        git clone --depth=1 --single-branch --branch "${DEVICE_TREE_BRANCH}" "${DEVICE_TREE}" "./${DEVICE_PATH}"
+
+        cd "${DEVICE_PATH}"
+        echo "COMMIT_ID=$(git rev-parse HEAD)" >> "${GITHUB_ENV}"
+        echo "Cloned commit: $(git rev-parse HEAD)"
 
     - name: Building OrangeFox
+      env:
+        MANIFEST_BRANCH: ${{ inputs.MANIFEST_BRANCH }}
+        DEVICE_NAME: ${{ inputs.DEVICE_NAME }}
+        BUILD_TARGET: ${{ inputs.BUILD_TARGET }}
       run: |
-        cd ${GITHUB_WORKSPACE}/OrangeFox/fox_${{ inputs.MANIFEST_BRANCH }}
+        set -euo pipefail
+        cd "${GITHUB_WORKSPACE}/OrangeFox/fox_${MANIFEST_BRANCH}"
         set +e
+        # shellcheck disable=SC1091
         source build/envsetup.sh
-        export ALLOW_MISSING_DEPENDENCIES=true
         set -e
-        lunch twrp_${{ inputs.DEVICE_NAME }}-eng && make clean && mka adbd ${{ inputs.BUILD_TARGET }}image
+        lunch "twrp_${DEVICE_NAME}-eng"
+        mka adbd "${BUILD_TARGET}image"
 
     - name: Set Release Properties
+      env:
+        MANIFEST_BRANCH: ${{ inputs.MANIFEST_BRANCH }}
+        DEVICE_TREE: ${{ inputs.DEVICE_TREE }}
       run: |
-        echo "BUILD_DATE=$(TZ=Asia/Manila date +%Y%m%d)" >> $GITHUB_ENV
-        cd ${GITHUB_WORKSPACE}/OrangeFox/fox_${{ inputs.MANIFEST_BRANCH }}
-
-        DEVICE_TREE_URL="${{ inputs.DEVICE_TREE }}"
+        set -euo pipefail
+        echo "BUILD_DATE=$(TZ=Asia/Manila date +%Y%m%d)" >> "${GITHUB_ENV}"
+        DEVICE_TREE_URL="${DEVICE_TREE}"
         if [[ "${DEVICE_TREE_URL}" == *.git ]]; then
           DEVICE_TREE_URL="${DEVICE_TREE_URL%.git}"
         fi
-        echo "DEVICE_TREE_URL=${DEVICE_TREE_URL}" >> $GITHUB_ENV
+        echo "DEVICE_TREE_URL=${DEVICE_TREE_URL}" >> "${GITHUB_ENV}"
+
+    - name: Check build outputs
+      env:
+        MANIFEST_BRANCH: ${{ inputs.MANIFEST_BRANCH }}
+        DEVICE_NAME: ${{ inputs.DEVICE_NAME }}
+      run: |
+        set -euo pipefail
+        OUT_DIR="OrangeFox/fox_${MANIFEST_BRANCH}/out/target/product/${DEVICE_NAME}"
+        echo "Listing ${OUT_DIR} ..."
+        ls -lh "${OUT_DIR}" || { echo "::error::Output directory not found: ${OUT_DIR}"; exit 1; }
+        if ! compgen -G "${OUT_DIR}/OrangeFox*.img" > /dev/null && ! compgen -G "${OUT_DIR}/OrangeFox*.zip" > /dev/null; then
+          echo "::error::No OrangeFox*.img or OrangeFox*.zip found in ${OUT_DIR} - build probably failed."
+          exit 1
+        fi
 
     - name: Upload to Release
-      uses: softprops/action-gh-release@v2
+      uses: softprops/action-gh-release@v3
       with:
         files: |
           OrangeFox/fox_${{ inputs.MANIFEST_BRANCH }}/out/target/product/${{ inputs.DEVICE_NAME }}/OrangeFox*.img
           OrangeFox/fox_${{ inputs.MANIFEST_BRANCH }}/out/target/product/${{ inputs.DEVICE_NAME }}/OrangeFox*.zip
         name: OrangeFox Recovery for ${{ inputs.DEVICE_NAME }} // ${{ env.BUILD_DATE }}
         tag_name: ${{ github.run_id }}
+        fail_on_unmatched_files: true
         body: |
           ## OrangeFox Recovery Build - Unofficial
           Build: fox_${{ inputs.MANIFEST_BRANCH }}
           Device: [Device Tree/Branch](${{ env.DEVICE_TREE_URL }}/tree/${{ inputs.DEVICE_TREE_BRANCH }})
           Commit: Most recent [commit](${{ env.DEVICE_TREE_URL }}/commit/${{ env.COMMIT_ID }}) during building.
-          
