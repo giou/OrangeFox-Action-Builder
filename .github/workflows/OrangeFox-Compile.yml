@@ -113,18 +113,10 @@ jobs:
       run: |
         set -euo pipefail
         sudo apt-get update -qq
-        sudo apt-get install -y -qq aria2 ccache
+        sudo apt-get install -y -qq aria2
         git clone --depth=1 https://gitlab.com/OrangeFox/misc/scripts.git -b master
         cd scripts
         sudo bash setup/android_build_env.sh
-
-    - name: Restore ccache
-      uses: actions/cache/restore@v4
-      with:
-        path: ~/.ccache
-        key: ccache-fox-${{ inputs.MANIFEST_BRANCH }}-${{ github.run_id }}
-        restore-keys: |
-          ccache-fox-${{ inputs.MANIFEST_BRANCH }}-
 
     - name: Set-up Manifest
       env:
@@ -224,23 +216,7 @@ jobs:
           *) LUNCH_RELEASE="" ;;
         esac
         lunch "twrp_${DEVICE_NAME}${LUNCH_RELEASE}-eng"
-        export USE_CCACHE=1
-        export CCACHE_DIR="${HOME}/.ccache"
-        export CCACHE_MAXSIZE="3G"
-        ccache -z || true
-        set +e
         mka adbd "${BUILD_TARGET}image"
-        MKA_STATUS=$?
-        set -e
-        ccache -s || true
-        exit $MKA_STATUS
-
-    - name: Save ccache
-      if: always()
-      uses: actions/cache/save@v4
-      with:
-        path: ~/.ccache
-        key: ccache-fox-${{ inputs.MANIFEST_BRANCH }}-${{ github.run_id }}
 
     - name: Set Release Properties
       env:
