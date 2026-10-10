@@ -228,8 +228,12 @@ jobs:
         export CCACHE_DIR="${HOME}/.ccache"
         export CCACHE_MAXSIZE="3G"
         ccache -z || true
+        set +e
         mka adbd "${BUILD_TARGET}image"
+        MKA_STATUS=$?
+        set -e
         ccache -s || true
+        exit $MKA_STATUS
 
     - name: Save ccache
       if: always()
