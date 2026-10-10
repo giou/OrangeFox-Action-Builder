@@ -245,6 +245,26 @@ jobs:
           exit 1
         fi
 
+    - name: Tag artifacts with manifest branch
+      env:
+        MANIFEST_BRANCH: ${{ inputs.MANIFEST_BRANCH }}
+        DEVICE_NAME: ${{ inputs.DEVICE_NAME }}
+      run: |
+        set -euo pipefail
+        # Upstream always emits OrangeFox-R<rel>-... (R = OrangeFox release,
+        # not Android). Suffix the manifest branch so 12.1/14.1/16.0 builds
+        # are distinguishable, e.g. OrangeFox-R12.0-fox16.0-Unofficial-apollon.img
+        OUT_DIR="OrangeFox/fox_${MANIFEST_BRANCH}/out/target/product/${DEVICE_NAME}"
+        for f in "${OUT_DIR}"/OrangeFox-R*-"${DEVICE_NAME}".img "${OUT_DIR}"/OrangeFox-R*-"${DEVICE_NAME}".zip; do
+          [[ -e "$f" ]] || continue
+          new="$(echo "$f" | sed -E "s/(OrangeFox-R[0-9.]+)-/\1-fox${MANIFEST_BRANCH}-/")"
+          if [[ "$f" != "$new" ]]; then
+            echo "Renaming $(basename "$f") -> $(basename "$new")"
+            mv "$f" "$new"
+          fi
+        done
+        ls -lh "${OUT_DIR}"/OrangeFox* 2>/dev/null | head
+
     - name: Upload to Release
       uses: softprops/action-gh-release@v3
       with:
