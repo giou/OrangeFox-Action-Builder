@@ -181,16 +181,20 @@ jobs:
         # Workaround for upstream bug (OrangeFox bootable/Recovery fox_16.0):
         # openaes isaac/rand.h uses K&R-style prototypes with commented-out
         # params (void randinit(/*_ ... _*/)), which clang-r547379 rejects
-        # with "too many arguments to function call". Give the two functions
-        # proper ANSI prototypes. Harmless on branches without this file.
+        # with "too many arguments to function call", and rand.c uses matching
+        # K&R definitions (void randinit(ctx, flag) + separate decl lines).
+        # Convert header + source to ANSI together (verified consistent pair).
         if [[ "${MANIFEST_BRANCH}" == "16.0" ]]; then
           RAND_H="${GITHUB_WORKSPACE}/OrangeFox/fox_${MANIFEST_BRANCH}/bootable/recovery/openaes/src/isaac/rand.h"
-          if [[ -f "${RAND_H}" ]]; then
+          RAND_C="${GITHUB_WORKSPACE}/OrangeFox/fox_${MANIFEST_BRANCH}/bootable/recovery/openaes/src/isaac/rand.c"
+          if [[ -f "${RAND_H}" && -f "${RAND_C}" ]]; then
             sed -i 's/^void randinit(\/\*_ randctx \*r, word flag _\*\/);/void randinit(randctx *r, word flag);/' "${RAND_H}"
             sed -i 's/^void isaac(\/\*_ randctx \*r _\*\/);/void isaac(randctx *r);/' "${RAND_H}"
-            grep -n "^void randinit\|^void isaac" "${RAND_H}"
+            sed -i '/^void     isaac(ctx)$/{N;s/.*/void isaac(randctx *ctx)/}' "${RAND_C}"
+            sed -i '/^void randinit(ctx, flag)$/{N;N;s/.*/void randinit(randctx *ctx, word flag)/}' "${RAND_C}"
+            grep -n "^void randinit\|^void isaac" "${RAND_H}" "${RAND_C}"
           else
-            echo "::warning::Expected ${RAND_H} not found, skipping openaes Clang workaround."
+            echo "::warning::Expected openaes sources not found, skipping Clang workaround."
           fi
         else
           echo "No upstream source patches needed for fox_${MANIFEST_BRANCH}."
