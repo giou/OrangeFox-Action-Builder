@@ -165,6 +165,29 @@ jobs:
         echo "COMMIT_ID=$(git rev-parse HEAD)" >> "${GITHUB_ENV}"
         echo "Cloned commit: $(git rev-parse HEAD)"
 
+    - name: Patch upstream sources for new Clang
+      env:
+        MANIFEST_BRANCH: ${{ inputs.MANIFEST_BRANCH }}
+      run: |
+        set -euo pipefail
+        # Workaround for upstream bug (OrangeFox bootable/Recovery fox_16.0):
+        # openaes isaac/rand.h uses K&R-style prototypes with commented-out
+        # params (void randinit(/*_ ... _*/)), which clang-r547379 rejects
+        # with "too many arguments to function call". Give the two functions
+        # proper ANSI prototypes. Harmless on branches without this file.
+        if [[ "${MANIFEST_BRANCH}" == "16.0" ]]; then
+          RAND_H="${GITHUB_WORKSPACE}/OrangeFox/fox_${MANIFEST_BRANCH}/bootable/recovery/openaes/src/isaac/rand.h"
+          if [[ -f "${RAND_H}" ]]; then
+            sed -i 's/^void randinit(\/\*_ randctx \*r, word flag _\*\/);/void randinit(randctx *r, word flag);/' "${RAND_H}"
+            sed -i 's/^void isaac(\/\*_ randctx \*r _\*\/);/void isaac(randctx *r);/' "${RAND_H}"
+            grep -n "^void randinit\|^void isaac" "${RAND_H}"
+          else
+            echo "::warning::Expected ${RAND_H} not found, skipping openaes Clang workaround."
+          fi
+        else
+          echo "No upstream source patches needed for fox_${MANIFEST_BRANCH}."
+        fi
+
     - name: Building OrangeFox
       env:
         MANIFEST_BRANCH: ${{ inputs.MANIFEST_BRANCH }}
