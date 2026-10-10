@@ -165,6 +165,46 @@ jobs:
         echo "COMMIT_ID=$(git rev-parse HEAD)" >> "${GITHUB_ENV}"
         echo "Cloned commit: $(git rev-parse HEAD)"
 
+    - name: Clone TWRP dependencies
+      env:
+        MANIFEST_BRANCH: ${{ inputs.MANIFEST_BRANCH }}
+        DEVICE_PATH: ${{ inputs.DEVICE_PATH }}
+      run: |
+        set -euo pipefail
+        FOX_ROOT="${GITHUB_WORKSPACE}/OrangeFox/fox_${MANIFEST_BRANCH}"
+        cd "${FOX_ROOT}"
+        DEPS_FILE="./${DEVICE_PATH}/twrp.dependencies"
+        if [[ ! -f "${DEPS_FILE}" ]]; then
+          echo "No twrp.dependencies, skipping."
+          exit 0
+        fi
+        python3 - "${DEPS_FILE}" <<'EOF'
+        import json, os, subprocess, sys
+        REMOTES = {
+          "github": "https://github.com",
+          "gitlab": "https://gitlab.com",
+          "LineageOS": "https://github.com/LineageOS",
+          "OrangeFox": "https://gitlab.com/OrangeFox",
+          "TeamWin": "https://github.com/TeamWin",
+        }
+        deps = json.load(open(sys.argv[1]))
+        for d in deps:
+          remote = d["remote"]
+          base = REMOTES.get(remote, remote)
+          url = base.rstrip("/") + "/" + d["repository"]
+          if not url.endswith(".git"):
+            url += ".git"
+          path, branch = d["target_path"], d.get("branch", "master")
+          if os.path.exists(path):
+            print(f"Removing pre-existing {path} ...")
+            subprocess.run(["rm", "-rf", path], check=True)
+          os.makedirs(os.path.dirname(path), exist_ok=True)
+          print(f"Cloning {url} (branch: {branch}) into {path} ...")
+          subprocess.run(["git", "clone", "--depth=1", "--single-branch",
+                          "--branch", branch, url, path], check=True)
+        print("TWRP dependencies cloned.")
+        EOF
+
     - name: Patch upstream sources for new Clang
       env:
         MANIFEST_BRANCH: ${{ inputs.MANIFEST_BRANCH }}
